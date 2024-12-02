@@ -1,0 +1,248 @@
+#include <pthread.h>
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <chrono>
+
+using namespace std;
+
+#pragma pack(1)
+
+typedef int LONG;
+typedef unsigned short WORD;
+typedef unsigned int DWORD;
+
+typedef struct Pixel {
+    vector<vector<unsigned char>> r;
+    vector<vector<unsigned char>> g;
+    vector<vector<unsigned char>> b;
+} Image;
+
+Image image, img_copy;
+
+typedef struct tagBITMAPFILEHEADER {
+    WORD bfType;
+    DWORD bfSize;
+    WORD bfReserved1;
+    WORD bfReserved2;
+    DWORD bfOffBits;
+} BITMAPFILEHEADER, *PBITMAPFILEHEADER;
+
+typedef struct tagBITMAPINFOHEADER {
+    DWORD biSize;
+    LONG biWidth;
+    LONG biHeight;
+    WORD biPlanes;
+    WORD biBitCount;
+    DWORD biCompression;
+    DWORD biSizeImage;
+    LONG biXPelsPerMeter;
+    LONG biYPelsPerMeter;
+    DWORD biClrUsed;
+    DWORD biClrImportant;
+} BITMAPINFOHEADER, *PBITMAPINFOHEADER;
+
+int rows, cols;
+
+bool fillAndAllocate(char*& buffer, const char* fileName, int& bufferSize) {
+    ifstream file(fileName);
+
+    if (file) {
+        file.seekg(0, ios::end);
+        streampos length = file.tellg();
+        file.seekg(0, ios::beg);
+
+        buffer = new char[length];
+        file.read(&buffer[0], length);
+
+        PBITMAPFILEHEADER file_header;
+        PBITMAPINFOHEADER info_header;
+
+        file_header = (PBITMAPFILEHEADER)(&buffer[0]);
+        info_header = (PBITMAPINFOHEADER)(&buffer[0] + sizeof(BITMAPFILEHEADER));
+        rows = info_header->biHeight;
+        cols = info_header->biWidth;
+        bufferSize = file_header->bfSize;
+        return true;
+    }
+    else {
+        cout << "File " << fileName << " doesn't exist!" << endl;
+        return false;
+    }
+}
+
+void getPixelsFromBMP24(int end, const char* fileReadBuffer) {
+    int count = 1;
+    int extra = cols % 4;
+    for (int i = 0; i < rows; i++) {
+        count += extra;
+        image.r.emplace_back(cols, 0);
+        image.g.emplace_back(cols, 0);
+        image.b.emplace_back(cols, 0);
+
+        for (int j = cols - 1; j >= 0; j--) {
+            for (int k = 0; k < 3; k++) {
+                switch (k) {
+                    case 0:
+                        image.r[i][j] = fileReadBuffer[end - count++];
+                        break;
+                    case 1:
+                        image.g[i][j] = fileReadBuffer[end - count++];
+                        break;
+                    case 2:
+                        image.b[i][j] = fileReadBuffer[end - count++];
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+    }
+}
+
+void writeOutBmp24(char* fileBuffer, const char* nameOfFileToCreate, int bufferSize) {
+    ofstream write(nameOfFileToCreate);
+    if (!write) {
+        cout << "Failed to write " << nameOfFileToCreate << endl;
+        return;
+    }
+    int count = 1;
+    int extra = cols % 4;
+    for (int i = 0; i < rows; i++) {
+        count += extra;
+        for (int j = cols - 1; j >= 0; j--) {
+            for (int k = 0; k < 3; k++) {
+                switch (k) {
+                    case 0:
+                        write << image.r[i][j];
+                        fileBuffer[bufferSize - count++] = image.r[i][j];
+                        break;
+                    case 1:
+                        write << image.g[i][j];
+                        fileBuffer[bufferSize - count++] = image.g[i][j];
+                        break;
+                    case 2:
+                        write << image.b[i][j];
+                        fileBuffer[bufferSize - count++] = image.b[i][j];
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+        for (int k = 0; k < extra; k++) {
+            write << (unsigned char)0;
+            fileBuffer[bufferSize - count++] = 0;
+        }
+    }
+}
+
+void* mirrorImage(void* arg) {
+    int threadNum = *(int*)arg;
+
+    for (int i = threadNum; i < rows; i += 2) {
+        for (int j = 0; j < cols / 2; j++) {
+            swap(image.r[i][j], image.r[i][cols - j - 1]);
+            swap(image.g[i][j], image.g[i][cols - j - 1]);
+            swap(image.b[i][j], image.b[i][cols - j - 1]);
+        }
+    }
+    pthread_exit(nullptr);
+}
+
+void* sharpenImage(void* arg) {
+    int threadNum = *(int*)arg;
+
+    for (int i = threadNum; i < rows; i += 2) {
+        for (int j = 0; j < cols; j++) {
+            if (i > 0 && i < rows - 1 && j > 0 && j < cols - 1) {
+                img_copy.r[i][j] = 5 * image.r[i][j] - image.r[i - 1][j] - image.r[i][j - 1] - image.r[i + 1][j] - image.r[i][j + 1];
+                img_copy.g[i][j] = 5 * image.g[i][j] - image.g[i - 1][j] - image.g[i][j - 1] - image.g[i + 1][j] - image.g[i][j + 1];
+                img_copy.b[i][j] = 5 * image.b[i][j] - image.b[i - 1][j] - image.b[i][j - 1] - image.b[i + 1][j] - image.b[i][j + 1];
+            }
+            else {
+                img_copy.r[i][j] = image.r[i][j];
+                img_copy.g[i][j] = image.g[i][j];
+                img_copy.b[i][j] = image.b[i][j];
+            }
+        }
+    }
+    pthread_exit(nullptr);
+}
+
+void* sepiaImage(void* arg) {
+    int threadNum = *(int*)arg;
+
+    for (int i = threadNum; i < rows; i += 2) {
+        for (int j = 0; j < cols; j++) {
+            unsigned char r = image.r[i][j];
+            unsigned char g = image.g[i][j];
+            unsigned char b = image.b[i][j];
+
+            img_copy.r[i][j] = min(0.393 * r + 0.769 * g + 0.189 * b, 255.0);
+            img_copy.g[i][j] = min(0.349 * r + 0.686 * g + 0.168 * b, 255.0);
+            img_copy.b[i][j] = min(0.272 * r + 0.534 * g + 0.131 * b, 255.0);
+        }
+    }
+    pthread_exit(nullptr);
+}
+
+int main() {
+    const char* fileToRead = "input.bmp";
+    const char* fileToCreate_mirror = "output_mirror.bmp";
+    const char* fileToCreate_sharpen = "output_sharpen.bmp";
+    const char* fileToCreate_sepia = "output_sepia.bmp";
+
+    char* fileReadBuffer = nullptr;
+    int bufferSize = 0;
+
+    if (!fillAndAllocate(fileReadBuffer, fileToRead, bufferSize)) {
+        return 1;
+    }
+
+    int end = bufferSize - 1;
+    getPixelsFromBMP24(end, fileReadBuffer);
+    delete[] fileReadBuffer;
+
+    img_copy.r.resize(rows, vector<unsigned char>(cols));
+    img_copy.g.resize(rows, vector<unsigned char>(cols));
+    img_copy.b.resize(rows, vector<unsigned char>(cols));
+
+    pthread_t threads[2];
+    int threadNum[2] = { 0, 1 };
+
+    auto start = chrono::high_resolution_clock::now();
+
+    pthread_create(&threads[0], nullptr, mirrorImage, &threadNum[0]);
+    pthread_create(&threads[1], nullptr, sharpenImage, &threadNum[1]);
+
+    for (int i = 0; i < 2; i++) {
+        pthread_join(threads[i], nullptr);
+    }
+
+    pthread_create(&threads[0], nullptr, sepiaImage, &threadNum[0]);
+    pthread_create(&threads[1], nullptr, sharpenImage, &threadNum[1]);
+
+    for (int i = 0; i < 2; i++) {
+        pthread_join(threads[i], nullptr);
+    }
+
+    auto end_time = chrono::high_resolution_clock::now();
+    auto duration = chrono::duration_cast<chrono::milliseconds>(end_time - start).count();
+
+    cout << "Image processing completed in " << duration << " milliseconds." << endl;
+
+    char* fileBuffer_mirror = new char[bufferSize];
+    char* fileBuffer_sharpen = new char[bufferSize];
+    char* fileBuffer_sepia = new char[bufferSize];
+
+    writeOutBmp24(fileBuffer_mirror, fileToCreate_mirror, bufferSize);
+    writeOutBmp24(fileBuffer_sharpen, fileToCreate_sharpen, bufferSize);
+    writeOutBmp24(fileBuffer_sepia, fileToCreate_sepia, bufferSize);
+
+    delete[] fileBuffer_mirror;
+    delete[] fileBuffer_sharpen;
+    delete[] fileBuffer_sepia;
+
+    return 0;
+}
